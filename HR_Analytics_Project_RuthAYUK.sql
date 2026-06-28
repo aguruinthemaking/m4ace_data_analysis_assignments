@@ -6,8 +6,7 @@ GO
 -- 2. Create the clean table with the exact correct column names
 SELECT 
     TRIM(id) AS employee_id,
-    first_name,
-    last_name,
+    CONCAT(TRIM(last_name), ', ', TRIM(first_name)) AS employee_name,
     gender,
     race,
     department,
@@ -122,3 +121,54 @@ GO
 
 SELECT COUNT(*) AS total_rows_inside_clean_table 
 FROM dbo.clean_hr_roster;
+
+
+-- Ensure SQL Server clears previous memory before launching the CTE
+;WITH DepartmentalAverages AS (
+    -- ========================================================
+    -- 1. THE CTE: Calculate baseline stats for each department
+    -- ========================================================
+    SELECT 
+        department,
+        COUNT(employee_id) AS current_active_headcount,
+        -- Calculate the overall average time people stay in this specific department
+        AVG(CAST(DATEDIFF(DAY, hire_date, COALESCE(term_date, GETDATE())) AS DECIMAL(10,2)) / 365.25) AS dept_avg_tenure_years
+    FROM dbo.clean_hr_roster
+    WHERE hire_date IS NOT NULL
+    GROUP BY department
+)
+SELECT 
+    emp.employee_id,
+    emp.employee_name,
+    emp.department,
+    emp.job_title,
+    emp.state,
+    
+    -- Calculate this specific employee's current tenure in years
+    ROUND(CAST(DATEDIFF(DAY, emp.hire_date, COALESCE(emp.term_date, GETDATE())) AS DECIMAL(10,2)) / 365.25, 1) AS employee_tenure_years,
+    
+    -- Pull the department baseline tenure straight from our CTE block above
+    ROUND(base.dept_avg_tenure_years, 1) AS department_average_tenure,
+
+    -- ========================================================
+    -- 2. THE WINDOW FUNCTION: Rank employees by seniority within their department
+    -- ========================================================
+    DENSE_RANK() OVER (PARTITION BY emp.department ORDER BY emp.hire_date ASC) AS seniority_rank_in_dept,
+
+    -- Dynamic Insight Flag comparing individual tenure against department average
+    CASE 
+        WHEN emp.term_date IS NULL AND (DATEDIFF(DAY, emp.hire_date, GETDATE()) / 365.25) > base.dept_avg_tenure_years THEN 'Loyal Veteran (Above Avg Tenure)'
+        WHEN emp.term_date IS NULL AND (DATEDIFF(DAY, emp.hire_date, GETDATE()) / 365.25) <= 1.0 THEN 'New Hire (Under 1 Year)'
+        WHEN emp.term_date IS NOT NULL THEN 'Exited Employee'
+        ELSE 'Standard Active Employee'
+    END AS employee_retention_status
+
+FROM dbo.clean_hr_roster emp
+-- ========================================================
+-- 3. THE JOIN: Connect the individual records to the department averages
+-- ========================================================
+JOIN DepartmentalAverages base ON emp.department = base.department
+
+-- Order the results neatly by department and seniority rank
+ORDER BY emp.department, seniority_rank_in_dept ASC;
+GO
